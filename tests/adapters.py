@@ -8,7 +8,8 @@ from jaxtyping import Float, Int
 import numpy.typing as npt
 import torch
 from torch import Tensor
-from cs336_basics import train_bpe
+from cs336_basics import train_bpe, tokenizer, transformer
+
 
 def run_linear(
     d_in: int,
@@ -28,8 +29,9 @@ def run_linear(
     Returns:
         Float[Tensor, "... d_out"]: The transformed output of your linear module.
     """
-
-    raise NotImplementedError
+    linear = transformer.Linear(d_in, d_out)
+    linear.load_state_dict({"W": weights})
+    return linear(in_features)
 
 
 def run_embedding(
@@ -50,8 +52,9 @@ def run_embedding(
     Returns:
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
-
-    raise NotImplementedError
+    embed = transformer.Embedding(vocab_size, d_model)
+    embed.load_state_dict({"W": weights})
+    return embed(token_ids)
 
 
 def run_swiglu(
@@ -561,7 +564,7 @@ def get_tokenizer(
     Returns:
         A BPE tokenizer that uses the provided vocab, merges, and special tokens.
     """
-    raise NotImplementedError
+    return tokenizer.BPETokenizer(vocab, merges, special_tokens=special_tokens)
 
 
 def run_train_bpe(
