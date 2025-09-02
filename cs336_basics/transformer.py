@@ -1,4 +1,3 @@
-import token
 import torch
 import torch.nn as nn
 import numpy as np
@@ -50,12 +49,13 @@ class Embedding(nn.Module):
         self.weight = nn.Parameter(w)
 
     def forward(self, x):
-        one_hot = rearrange(x, "... -> ... 1") == rearrange(
-            torch.arange(self.num_embeddings), "num_embed -> 1 num_embed"
-        )
-        return einsum(
-            one_hot.float(), self.weight, "... num_embed, num_embed d_model -> ... d_model"
-        )
+        return self.weight[x]
+        # one_hot = rearrange(x, "... -> ... 1") == rearrange(
+        #     torch.arange(self.num_embeddings), "num_embed -> 1 num_embed"
+        # )
+        # return einsum(
+        #     one_hot.float(), self.weight, "... num_embed, num_embed d_model -> ... d_model"
+        # )
 
 
 class RMSNorm(nn.Module):
@@ -138,8 +138,7 @@ def softmax(x, dim: int):
 def scaled_dot_product_attention(q, k, v, mask):
     d_k = q.shape[-1]
     attn = einsum(q, k, "... m d_k, ... n d_k -> ... m n") / np.sqrt(d_k)
-    m = torch.zeros(mask.shape)
-    m[~mask] = -float('inf')
+    m = torch.where(mask, 0, -float('inf'))
     attn = attn + m
     attn = softmax(attn, -1) @ v
     return attn
@@ -201,6 +200,7 @@ class TransformerBlock(nn.Module):
 class TransformerLM(nn.Module):
     def __init__(self, vocab_size, context_length, d_model, num_layers, num_heads, d_ff, rope_theta):
         super().__init__()
+        self.context_length = context_length
         self.token_embeddings = Embedding(vocab_size, d_model)
         self.layers = nn.ModuleList([TransformerBlock(
             d_model, d_ff, num_heads, context_length, theta=rope_theta) for _ in range(num_layers)])

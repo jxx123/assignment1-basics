@@ -134,7 +134,8 @@ def compute_pair_freq_optimized(token_stats):
     for tokens, count in token_stats.items():
         if len(tokens) > 1:  # Only process sequences that can form pairs
             # Use list comprehension for better performance
-            pairs = [(tokens[i], tokens[i + 1]) for i in range(len(tokens) - 1)]
+            pairs = [(tokens[i], tokens[i + 1])
+                     for i in range(len(tokens) - 1)]
             for pair in pairs:
                 pair_freq[pair] += count
     return pair_freq
@@ -311,6 +312,7 @@ def train_pipeline_optimized(
     vocab_size: int,
     special_tokens: list[str],
     num_processes: int = None,
+    num_chunks: int = None,
 ):
     """Highly optimized training pipeline."""
     if num_processes is None:
@@ -320,8 +322,9 @@ def train_pipeline_optimized(
     split_special_token_bytes = special_tokens[0].encode("utf-8")
 
     with open(input_path, "rb") as f:
-        boundaries = find_chunk_boundaries(f, num_processes, split_special_token_bytes)
-        print("Found boundaries")
+        boundaries = find_chunk_boundaries(
+            f, num_chunks, split_special_token_bytes)
+        print(f"Found {len(boundaries)} boundaries")
 
     # Prepare chunk arguments with chunk IDs for tracking
     chunk_args = [
@@ -334,15 +337,16 @@ def train_pipeline_optimized(
     print(f"Processing {total_chunks} chunks...")
 
     # Use pool with maxtasksperchild to avoid memory leaks
-    with multiprocessing.Pool(processes=num_processes, maxtasksperchild=1) as pool:
+    with multiprocessing.Pool(processes=num_processes) as pool:
         # Use optimized chunk processing
         results = []
-        with tqdm(total=total_chunks, desc="Processing chunks", unit="chunk") as pbar:
-            for result in pool.imap_unordered(process_chunk_optimized, chunk_args):
-                chunk_id, token_stats, num_tokens = result
-                results.append((chunk_id, token_stats, num_tokens))
-                pbar.set_postfix(tokens=f"{num_tokens:,}")
-                pbar.update(1)
+        # chunksize = max(1, total_chunks // (num_processes * 4))
+        batch_size = num_processes * 2
+
+        for i in tqdm(range(0, total_chunks, batch_size), desc="batch"):
+            batch_args = chunk_args[i: (i + batch_size)]
+            batch_results = pool.map(process_chunk_optimized, batch_args)
+            results.extend(batch_results)
 
     end_time = time.time()
     print(f"Multiprocess took {(end_time - start_time) / 60:.2f} min.")
@@ -382,14 +386,14 @@ def train_pipeline_optimized(
 
 # Keep original for compatibility
 def train_pipeline(
-    input_path: str, vocab_size: int, special_tokens: list[str], num_processes: int = 4
+    input_path: str, vocab_size: int, special_tokens: list[str], num_processes: int = 4, num_chunks: int = 10
 ):
     return train_pipeline_optimized(
-        input_path, vocab_size, special_tokens, num_processes
+        input_path, vocab_size, special_tokens, num_processes, num_chunks=num_chunks
     )
 
 
-## Usage
+# Usage
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Pre-tokenization example for chunking a file."
@@ -397,7 +401,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--file_path",
         type=str,
-        default="data/TinyStoriesV2-GPT4-valid.txt",
+        default="data/TinyStoriesV2-GPT4-train.txt",
         help="Path to the file to be chunked.",
     )
     parser.add_argument(
@@ -417,6 +421,12 @@ if __name__ == "__main__":
         type=int,
         default=4,
         help="Number of processes to use for pre-tokenization.",
+    )
+    parser.add_argument(
+        "--num_chunks",
+        type=int,
+        default=10,
+        help="Number of chunks",
     )
     parser.add_argument(
         "--output_dir",
@@ -447,9 +457,8 @@ if __name__ == "__main__":
         args.vocab_size,
         args.special_tokens,
         num_processes=args.num_processes,
+        num_chunks=args.num_chunks
     )
-    # print(vocab)
-    # print(merges)
 
     train_data_filename = os.path.splitext(os.path.basename(args.file_path))[0]
     tokenizer_path = os.path.join(args.output_dir, train_data_filename)
