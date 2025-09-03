@@ -40,9 +40,11 @@ class TrainState:
     model_config: config_schema.ModelConfig
 
 
-def save_checkpoint(model, optimizer, iteration, model_config, out):
+def save_checkpoint(model, optimizer, iteration, model_config, out, original_model=None):
+    # Use original model's state dict if provided (to avoid torch.compile prefixes)
+    model_to_save = original_model if original_model is not None else model
     train_state = TrainState(
-        model_params=model.state_dict(),
+        model_params=model_to_save.state_dict(),
         optimizer=optimizer.state_dict(),
         iteration=iteration,
         model_config=model_config
@@ -52,15 +54,30 @@ def save_checkpoint(model, optimizer, iteration, model_config, out):
 
 def load_checkpoint(src, model, optimizer):
     train_state = TrainState(**torch.load(src))
-    model.load_state_dict(train_state.model_params)
+
+    # Backward compatibility: handle old checkpoints with torch.compile prefix
+    model_params = train_state.model_params
+    if any(key.startswith('_orig_mod.') for key in model_params.keys()):
+        model_params = {key.replace('_orig_mod.', ''): value
+                        for key, value in model_params.items()}
+
+    model.load_state_dict(model_params)
     optimizer.load_state_dict(train_state.optimizer)
     return train_state.iteration
 
 
 def load_model_from_checkpoint(checkpoint_path):
     train_state = TrainState(**torch.load(checkpoint_path))
+    print(train_state.model_config)
     model = transformer.TransformerLM(**train_state.model_config)
-    model.load_state_dict(train_state.model_params)
+
+    # Backward compatibility: handle old checkpoints with torch.compile prefix
+    model_params = train_state.model_params
+    if any(key.startswith('_orig_mod.') for key in model_params.keys()):
+        model_params = {key.replace('_orig_mod.', ''): value
+                        for key, value in model_params.items()}
+
+    model.load_state_dict(model_params)
     return model
 
 
@@ -131,7 +148,7 @@ def main():
     val_dataset = np.memmap(data_config.val_data_path, dtype=np.uint16)
 
     # Initialize model
-    model = transformer.TransformerLM(
+    original_model = transformer.TransformerLM(
         vocab_size=model_config.vocab_size,
         context_length=model_config.context_length,
         d_model=model_config.d_model,
@@ -141,11 +158,13 @@ def main():
         rope_theta=model_config.rope_theta
     ).to(data_config.device)
 
+    # Keep reference to original model for checkpointing
+    model = original_model
     try:
         if data_config.device == "mps":
-            model = torch.compile(model, backend="aot_eager")
+            model = torch.compile(original_model, backend="aot_eager")
         else:
-            model = torch.compile(model)
+            model = torch.compile(original_model)
     except:
         print("Failed to compile model")
 
@@ -201,7 +220,7 @@ def main():
                 checkpoint_path = os.path.join(
                     experiment_checkpoint_dir, f"checkpoint_{step}.pt")
                 save_checkpoint(model, opt, step,
-                                model_config, checkpoint_path)
+                                model_config, checkpoint_path, original_model)
 
                 # Log model checkpoint to wandb if enabled
                 if wandb_run is not None and config.wandb.log_model:
