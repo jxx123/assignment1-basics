@@ -40,6 +40,7 @@ data:
   device: "mps" # "cuda" or "cpu", "mps"
 
 training:
+  # 40000 steps for 327680000 tokens
   num_steps: 5000
   eval_interval: 500
   save_interval: 1000

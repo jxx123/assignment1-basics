@@ -26,6 +26,10 @@ class BPETokenizer:
             merges = pickle.load(f)
         return cls(vocab, merges, special_tokens)
 
+    @property
+    def eot_token(self):
+        return self._byte_to_int[b"<|endoftext|>"]
+
     def _merge(self, pretoken: bytes) -> list[int]:
         if len(pretoken) == 1:
             return [self._byte_to_int[pretoken]]

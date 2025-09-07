@@ -24,7 +24,7 @@ class Linear(nn.Module):
         self.weight = nn.Parameter(w)  # out, in
 
     def forward(self, x):
-        return einsum(x, self.weight, "... in, out in -> ... out")
+        return einsum(x, self.weight, "... d_in, d_out d_in -> ... d_out")
 
 
 class Embedding(nn.Module):

@@ -40,11 +40,9 @@ class TrainState:
     model_config: config_schema.ModelConfig
 
 
-def save_checkpoint(model, optimizer, iteration, model_config, out, original_model=None):
-    # Use original model's state dict if provided (to avoid torch.compile prefixes)
-    model_to_save = original_model if original_model is not None else model
+def save_checkpoint(model, optimizer, iteration, model_config, out):
     train_state = TrainState(
-        model_params=model_to_save.state_dict(),
+        model_params=model.state_dict(),
         optimizer=optimizer.state_dict(),
         iteration=iteration,
         model_config=model_config
@@ -55,27 +53,28 @@ def save_checkpoint(model, optimizer, iteration, model_config, out, original_mod
 def load_checkpoint(src, model, optimizer):
     train_state = TrainState(**torch.load(src))
 
-    # Backward compatibility: handle old checkpoints with torch.compile prefix
     model_params = train_state.model_params
-    if any(key.startswith('_orig_mod.') for key in model_params.keys()):
-        model_params = {key.replace('_orig_mod.', ''): value
-                        for key, value in model_params.items()}
-
     model.load_state_dict(model_params)
     optimizer.load_state_dict(train_state.optimizer)
     return train_state.iteration
 
 
-def load_model_from_checkpoint(checkpoint_path):
+def load_model_from_checkpoint(checkpoint_path, compile=False, device=None):
     train_state = TrainState(**torch.load(checkpoint_path))
-    print(train_state.model_config)
     model = transformer.TransformerLM(**train_state.model_config)
+    if compile:
+        if device == "mps":
+            model = torch.compile(model, backend="aot_eager")
+        else:
+            model = torch.compile(model)
+    if device is not None:
+        model = model.to(device)
 
     # Backward compatibility: handle old checkpoints with torch.compile prefix
     model_params = train_state.model_params
-    if any(key.startswith('_orig_mod.') for key in model_params.keys()):
-        model_params = {key.replace('_orig_mod.', ''): value
-                        for key, value in model_params.items()}
+    # if any(key.startswith('_orig_mod.') for key in model_params.keys()):
+    #     model_params = {key.replace('_orig_mod.', ''): value
+    #                     for key, value in model_params.items()}
 
     model.load_state_dict(model_params)
     return model
@@ -188,8 +187,11 @@ def main():
             if opt_config.gradient_clip_norm is not None:
                 optimizer.clip_gradient(model.parameters(),
                                         opt_config.gradient_clip_norm)
+            activation_norm = logits.square().sum().sqrt()
             grad_norm = sum([p.grad.square().sum()
                              for p in model.parameters()]).sqrt()
+            weight_norm = sum([p.square().sum()
+                              for p in model.parameters()]).sqrt()
 
             # set lr schedule
             lr = optimizer.get_lr_cosine_schedule(
@@ -220,7 +222,7 @@ def main():
                 checkpoint_path = os.path.join(
                     experiment_checkpoint_dir, f"checkpoint_{step}.pt")
                 save_checkpoint(model, opt, step,
-                                model_config, checkpoint_path, original_model)
+                                model_config, checkpoint_path)
 
                 # Log model checkpoint to wandb if enabled
                 if wandb_run is not None and config.wandb.log_model:
@@ -235,6 +237,8 @@ def main():
                     "train/perplexity": train_perplexity.item(),
                     "train/learning_rate": lr,
                     "train/grad_norm": grad_norm.item(),
+                    "train/weight_norm": weight_norm.item(),
+                    "train/activation_norm": activation_norm.item(),
                     "train/token_seen": data_config.batch_size * model_config.context_length * step,
                 })
 
