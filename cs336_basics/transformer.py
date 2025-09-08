@@ -43,8 +43,7 @@ class Embedding(nn.Module):
 
         self.num_embeddings = num_embeddings
         self.embedding_dim = embedding_dim
-        w = torch.empty(num_embeddings, embedding_dim,
-                        dtype=dtype, device=device)
+        w = torch.empty(num_embeddings, embedding_dim, dtype=dtype, device=device)
         torch.nn.init.trunc_normal_(w, mean=0, std=1, a=-3, b=3)
         self.weight = nn.Parameter(w)
 
@@ -59,25 +58,31 @@ class Embedding(nn.Module):
 
 
 class RMSNorm(nn.Module):
-    def __init__(self, d_model: int, eps: float = 1e-5, device: torch.device | None = None, dtype: torch.dtype | None = None):
+    def __init__(
+        self, d_model: int, eps: float = 1e-5, device: torch.device | None = None, dtype: torch.dtype | None = None
+    ):
         super().__init__()
         self.d_model = d_model
         self.eps = eps
-        self.weight = nn.Parameter(torch.ones(
-            d_model, device=device, dtype=dtype))
+        self.weight = nn.Parameter(torch.ones(d_model, device=device, dtype=dtype))
 
     def forward(self, x):
         in_dtype = x.dtype
         x = x.to(torch.float32)
         # sum over the last dimension (d_model)
-        rms = torch.sqrt((x ** 2).sum(dim=-1, keepdim=True) /
-                         self.d_model + self.eps)  # batch, seq, 1
+        rms = torch.sqrt((x**2).sum(dim=-1, keepdim=True) / self.d_model + self.eps)  # batch, seq, 1
         out = x / rms * self.weight
         return out.to(in_dtype)
 
 
 class SwiGLU(nn.Module):
-    def __init__(self, d_model: int, d_ff: int | None = None, device: torch.device | None = None, dtype: torch.dtype | None = None):
+    def __init__(
+        self,
+        d_model: int,
+        d_ff: int | None = None,
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
+    ):
         super().__init__()
         self.d_model = d_model
         if d_ff is None:
@@ -88,14 +93,23 @@ class SwiGLU(nn.Module):
         self.w3 = Linear(d_model, d_ff, device=device, dtype=dtype)
 
     def forward(self, x):
-        def swish(x): return x * torch.sigmoid(x)
+        def swish(x):
+            return x * torch.sigmoid(x)
+
         x1 = swish(self.w1(x)) * self.w3(x)  # ..., d_ff
         x2 = self.w2(x1)
         return x2
 
 
 class RoPE(nn.Module):
-    def __init__(self, theta: float, d_k: int, max_seq_len: int, device: torch.device | None = None, dtype: torch.dtype | None = None):
+    def __init__(
+        self,
+        theta: float,
+        d_k: int,
+        max_seq_len: int,
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
+    ):
         super().__init__()
         self.theta = theta
         self.d_k = d_k
@@ -104,23 +118,20 @@ class RoPE(nn.Module):
         self.device = device
         # Precompute the cos and sin matrix
         num = torch.arange(max_seq_len, device=device, dtype=dtype)
-        den = theta ** (- 2 * (torch.arange(1, d_k // 2 +
-                        1, device=device, dtype=dtype) - 1) / d_k)
+        den = theta ** (-2 * (torch.arange(1, d_k // 2 + 1, device=device, dtype=dtype) - 1) / d_k)
         theta_i_k = einsum(num, den, "max_seq, half_d -> max_seq half_d")
         cos = torch.cos(theta_i_k)
         sin = torch.sin(theta_i_k)
-        self.register_buffer('cos', cos, persistent=False)
-        self.register_buffer('sin', sin, persistent=False)
+        self.register_buffer("cos", cos, persistent=False)
+        self.register_buffer("sin", sin, persistent=False)
 
     def forward(self, x, token_positions=None):
         T, d = x.shape[-2], x.shape[-1]
         assert x.shape[-1] == self.d_k, "embedding dimension mismatch"
         assert x.shape[-2] <= self.max_seq_len, "sequence length is too large"
         # cos0, cos0, cos1, cos1 ...
-        cos = rearrange(torch.stack(
-            [self.cos, self.cos], dim=-1), "max_seq d n -> max_seq (d n)")
-        sin = rearrange(torch.stack(
-            [self.sin, self.sin], dim=-1), "max_seq d n -> max_seq (d n)")
+        cos = rearrange(torch.stack([self.cos, self.cos], dim=-1), "max_seq d n -> max_seq (d n)")
+        sin = rearrange(torch.stack([self.sin, self.sin], dim=-1), "max_seq d n -> max_seq (d n)")
         x_sin = torch.stack([-x[..., 1::2], x[..., 0::2]], dim=-1)
         x_sin = rearrange(x_sin, "... d n -> ... (d n)")
         if token_positions is not None:
@@ -138,14 +149,22 @@ def softmax(x, dim: int):
 def scaled_dot_product_attention(q, k, v, mask):
     d_k = q.shape[-1]
     attn = einsum(q, k, "... m d_k, ... n d_k -> ... m n") / np.sqrt(d_k)
-    m = torch.where(mask, 0, -float('inf'))
+    m = torch.where(mask, 0, -float("inf"))
     attn = attn + m
     attn = softmax(attn, -1) @ v
     return attn
 
 
 class MultiHeadSelfAttention(nn.Module):
-    def __init__(self, d_model: int, num_heads: int, theta: float | None = None, max_seq_len: int = None, device: torch.device | None = None, dtype: torch.dtype | None = None):
+    def __init__(
+        self,
+        d_model: int,
+        num_heads: int,
+        theta: float | None = None,
+        max_seq_len: int = None,
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
+    ):
         super().__init__()
         assert d_model % num_heads == 0
         self.d_model = d_model
@@ -156,10 +175,9 @@ class MultiHeadSelfAttention(nn.Module):
             self.rope = None
         if max_seq_len is None:
             max_seq_len = 1000
-        mask = torch.arange(max_seq_len)[
-            :, None] >= torch.arange(max_seq_len)[None, :]
+        mask = torch.arange(max_seq_len)[:, None] >= torch.arange(max_seq_len)[None, :]
         # print('mask', mask)
-        self.register_buffer('mask', mask, persistent=False)
+        self.register_buffer("mask", mask, persistent=False)
         self.q_proj = Linear(d_model, d_model, device=device, dtype=dtype)
         self.k_proj = Linear(d_model, d_model, device=device, dtype=dtype)
         self.v_proj = Linear(d_model, d_model, device=device, dtype=dtype)
@@ -167,12 +185,9 @@ class MultiHeadSelfAttention(nn.Module):
 
     def forward(self, x, token_positions=None):
         T = x.shape[-2]
-        Q = rearrange(self.q_proj(
-            x), "... T (h d) -> ... h T d", h=self.num_heads)
-        K = rearrange(self.k_proj(
-            x), "... T (h d) -> ... h T d", h=self.num_heads)
-        V = rearrange(self.v_proj(
-            x), "... T (h d) -> ... h T d", h=self.num_heads)
+        Q = rearrange(self.q_proj(x), "... T (h d) -> ... h T d", h=self.num_heads)
+        K = rearrange(self.k_proj(x), "... T (h d) -> ... h T d", h=self.num_heads)
+        V = rearrange(self.v_proj(x), "... T (h d) -> ... h T d", h=self.num_heads)
         if self.rope:
             Q = self.rope(Q, token_positions=token_positions)
             K = self.rope(K, token_positions=token_positions)
@@ -183,11 +198,21 @@ class MultiHeadSelfAttention(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, d_model, d_ff, num_heads, max_seq_len, theta: float = 10000.0, device: torch.device | None = None, dtype: torch.dtype | None = None):
+    def __init__(
+        self,
+        d_model,
+        d_ff,
+        num_heads,
+        max_seq_len,
+        theta: float = 10000.0,
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
+    ):
         super().__init__()
         self.ln1 = RMSNorm(d_model, device=device, dtype=dtype)
         self.attn = MultiHeadSelfAttention(
-            d_model, num_heads, theta=theta, max_seq_len=max_seq_len, device=device, dtype=dtype)
+            d_model, num_heads, theta=theta, max_seq_len=max_seq_len, device=device, dtype=dtype
+        )
         self.ln2 = RMSNorm(d_model, device=device, dtype=dtype)
         self.ffn = SwiGLU(d_model, d_ff=d_ff, device=device, dtype=dtype)
 
@@ -198,12 +223,22 @@ class TransformerBlock(nn.Module):
 
 
 class TransformerLM(nn.Module):
-    def __init__(self, vocab_size, context_length, d_model, num_layers, num_heads, d_ff, rope_theta):
+    def __init__(
+        self,
+        vocab_size: int,
+        context_length: int,
+        d_model: int,
+        num_layers: int,
+        num_heads: int,
+        d_ff: int,
+        rope_theta: int,
+    ):
         super().__init__()
         self.context_length = context_length
         self.token_embeddings = Embedding(vocab_size, d_model)
-        self.layers = nn.ModuleList([TransformerBlock(
-            d_model, d_ff, num_heads, context_length, theta=rope_theta) for _ in range(num_layers)])
+        self.layers = nn.ModuleList(
+            [TransformerBlock(d_model, d_ff, num_heads, context_length, theta=rope_theta) for _ in range(num_layers)]
+        )
         self.ln_final = RMSNorm(d_model)
         self.lm_head = Linear(d_model, vocab_size)
 
@@ -275,8 +310,7 @@ if __name__ == "__main__":
     num_heads = 25
     d_ff = 6400
     rope_theta = 10000
-    lm = TransformerLM(vocab_size, context_length, d_model,
-                       num_layers, num_heads, d_ff, rope_theta)
+    lm = TransformerLM(vocab_size, context_length, d_model, num_layers, num_heads, d_ff, rope_theta)
     parameter_count = 0
 
     def count_parameters(model):
